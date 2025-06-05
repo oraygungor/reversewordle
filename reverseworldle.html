@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-RED">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reverse Wordle Solver (Hints Only) by Oray</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background-color: #f0f0f0; color: #333; }
+        .container { background-color: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); max-width: 700px; margin: auto;}
+        h1 { color: #444; text-align: center; }
+        label { display: block; margin-top: 10px; margin-bottom: 5px; font-weight: bold; }
+        input[type="file"] { margin-bottom: 15px; }
+        button {
+            background-color: #007bff; color: white; padding: 10px 15px;
+            border: none; border-radius: 4px; cursor: pointer; margin-top: 5px; margin-right: 5px;
+        }
+        button:hover { background-color: #0056b3; }
+        .add-hint-btn { background-color: #28a745; }
+        .add-hint-btn:hover { background-color: #1e7e34; }
+        .remove-hint-btn { background-color: #dc3545; font-size: 0.8em; padding: 3px 6px;}
+        .remove-hint-btn:hover { background-color: #c82333; }
+
+        .hint-pattern-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 15px;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            background-color: #f9f9f9;
+        }
+        .hint-squares { display: flex; gap: 5px; }
+        .hint-square {
+            width: 35px; height: 35px; border: 1px solid #ccc; cursor: pointer;
+            display: flex; align-items: center; justify-content: center;
+            font-weight: bold; color: white; user-select: none; border-radius: 3px;
+        }
+        .hint-b { background-color: #787c7e; } /* Grey */
+        .hint-y { background-color: #c9b458; } /* Yellow */
+        .hint-g { background-color: #6aaa64; } /* Green */
+
+        #resultsContainer { margin-top: 20px; }
+        .solution-block { margin-bottom:15px; padding:10px; border:1px solid #c8e6c9; background-color:#e9f7ef; border-radius:4px; }
+        .solution-block h3 { margin-top:0; }
+        .error, .status { font-weight: bold; margin-top: 10px;}
+        .error { color: red; }
+        .status { color: #007bff; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>AI Reverse Wordle Solver (Hints Only) - Optimized</h1>
+
+        <label for="wordFile">Upload 5words.txt:</label>
+        <input type="file" id="wordFile" accept=".txt" required>
+
+        <div id="hintRowsContainer">
+            <!-- Hint pattern rows will be dynamically added here -->
+        </div>
+
+        <button class="add-hint-btn" onclick="addHintRow()">+ Add Hint Pattern</button>
+        <button id="findSolutionsButton" onclick="findAllSolutionsOptimized()">Find Solutions</button>
+        <button id="stopButton" onclick="stopSearch()" style="display:none; background-color:#ffc107; color:black;">Stop Search</button>
+
+
+        <div id="statusMessage" class="status"></div>
+        <div id="errorMessage" class="error"></div>
+
+        <h2>Possible Solutions:</h2>
+        <div id="resultsContainer">
+            <p>Upload word list, add hint patterns, then click "Find Solutions".</p>
+        </div>
+    </div>
+
+<script>
+    let wordList = [];
+    let hintRowCount = 0;
+    const hintCycleStates = ['B', 'Y', 'G'];
+    const hintCycleClasses = ['hint-b', 'hint-y', 'hint-g'];
+    
+    let solutionsFound = []; // Stores all found solutions {target, guesses}
+    let searchInProgress = false;
+    let stopSearchFlag = false;
+    let wordListCacheForKnowledge = new Map(); // Cache for getWordsMatchingKnowledge
+
+    document.getElementById('wordFile').addEventListener('change', function(event) {
+        const file = event.target.files[0];
+        if (file) {
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                wordList = e.target.result.split(/\r?\n/)
+                                 .map(word => word.trim().toUpperCase())
+                                 .filter(word => word.length === 5 && /^[A-Z]+$/.test(word));
+                if (wordList.length > 0) {
+                    console.log(`Loaded ${wordList.length} 5-letter words.`);
+                    document.getElementById('errorMessage').textContent = '';
+                    if (document.getElementById('hintRowsContainer').children.length === 0) {
+                        addHintRow(); // Add one row by default
+                    }
+                } else {
+                    wordList = [];
+                    document.getElementById('errorMessage').textContent = 'No valid 5-letter words found.';
+                }
+            };
+            reader.readAsText(file);
+        }
+    });
+
+    function addHintRow() {
+        hintRowCount++; // Not strictly needed for ID anymore but good for tracking
+        const container = document.getElementById('hintRowsContainer');
+        const rowId = `hintRow-${Date.now()}-${Math.random()}`; // More unique ID
+        const div = document.createElement('div');
+        div.className = 'hint-pattern-row';
+        div.id = rowId;
+
+        let hintSquaresHTML = '';
+        for (let i = 0; i < 5; i++) {
+            hintSquaresHTML += `<div class="hint-square ${hintCycleClasses[0]}" data-state="${hintCycleStates[0]}" onclick="cycleHintSquare(this)">${hintCycleStates[0]}</div>`;
+        }
+        div.innerHTML = `
+            <label>Hint Pattern ${container.children.length + 1}:</label>
+            <div class="hint-squares">${hintSquaresHTML}</div>
+            <button class="remove-hint-btn" onclick="removeHintRow('${rowId}')">X</button>
+        `;
+        container.appendChild(div);
+    }
+
+    function removeHintRow(rowId) {
+        document.getElementById(rowId)?.remove();
+        const rows = document.querySelectorAll('#hintRowsContainer .hint-pattern-row');
+        rows.forEach((row, index) => {
+            row.querySelector('label').textContent = `Hint Pattern ${index + 1}:`;
+        });
+    }
+
+    function cycleHintSquare(squareElement) {
+        let currentState = squareElement.getAttribute('data-state');
+        let currentIndex = hintCycleStates.indexOf(currentState);
+        currentIndex = (currentIndex + 1) % hintCycleStates.length;
+        squareElement.setAttribute('data-state', hintCycleStates[currentIndex]);
+        hintCycleClasses.forEach(cls => squareElement.classList.remove(cls));
+        squareElement.classList.add(hintCycleClasses[currentIndex]);
+        squareElement.textContent = hintCycleStates[currentIndex];
+    }
+
+    function generateHints(targetWord, guessedWord) {
+        targetWord = targetWord.toUpperCase();
+        guessedWord = guessedWord.toUpperCase();
+        const n = 5;
+        let hints = Array(n).fill('');
+        let targetChars = targetWord.split('');
+        let tempTarget = [...targetChars]; // Modifiable copy of target
+
+        // Green pass
+        for (let i = 0; i < n; i++) {
+            if (guessedWord[i] === targetChars[i]) {
+                hints[i] = 'G';
+                tempTarget[i] = null; // Mark as used for green
+            }
+        }
+        // Yellow pass
+        for (let i = 0; i < n; i++) {
+            if (hints[i] === 'G') continue; // Already green
+
+            const guessedChar = guessedWord[i];
+            const yellowIndexInTarget = tempTarget.indexOf(guessedChar); // Find in *remaining* target chars
+            if (yellowIndexInTarget !== -1) {
+                hints[i] = 'Y';
+                tempTarget[yellowIndexInTarget] = null; // Mark this target char as used for this yellow
+            }
+        }
+        // Grey/Black pass
+        for (let i = 0; i < n; i++) {
+            if (hints[i] === '') {
+                hints[i] = 'B';
+            }
+        }
+        return hints.join('');
+    }
+
+    class Knowledge {
+        constructor(existingKnowledge = null) {
+            if (existingKnowledge) {
+                this.greenMap = { ...existingKnowledge.greenMap };
+                this.yellows = {}; // {char: Set<pos where char was yellow but NOT green>}
+                for (const char in existingKnowledge.yellows) {
+                    this.yellows[char] = new Set(existingKnowledge.yellows[char]);
+                }
+                this.mustContain = new Set(existingKnowledge.mustContain); // Chars that are G or Y
+                this.confirmedGrey = new Set(existingKnowledge.confirmedGrey); // Chars confirmed not in word
+            } else {
+                this.greenMap = {};
+                this.yellows = {};
+                this.mustContain = new Set();
+                this.confirmedGrey = new Set();
+            }
+        }
+
+        updateWith(guessedWord, hintPattern) {
+            const newKnowledge = new Knowledge(this); // Create a deep copy for modification
+            const guessedChars = guessedWord.split('');
+
+            // Store which letters in the current guess are green or yellow
+            const currentGuessGreenLetters = new Set();
+            const currentGuessYellowLetters = new Set();
+
+            for (let i = 0; i < 5; i++) {
+                const char = guessedChars[i];
+                const hint = hintPattern[i];
+
+                if (hint === 'G') {
+                    newKnowledge.greenMap[i] = char;
+                    newKnowledge.mustContain.add(char);
+                    currentGuessGreenLetters.add(char);
+                    // If char was previously grey, it's not anymore
+                    newKnowledge.confirmedGrey.delete(char);
+                    // If char was yellow at this pos, remove that yellow constraint
+                    if (newKnowledge.yellows[char]) {
+                        newKnowledge.yellows[char].delete(i);
+                        if (newKnowledge.yellows[char].size === 0) delete newKnowledge.yellows[char];
+                    }
+                } else if (hint === 'Y') {
+                    newKnowledge.mustContain.add(char);
+                    currentGuessYellowLetters.add(char);
+                    if (!newKnowledge.yellows[char]) newKnowledge.yellows[char] = new Set();
+                    newKnowledge.yellows[char].add(i); // char is yellow at this position
+                     // If char was previously grey, it's not anymore
+                    newKnowledge.confirmedGrey.delete(char);
+                }
+            }
+            
+            // Process Grey letters: A letter is grey if it's 'B' in this guess AND
+            // it's not green or yellow ANYWHERE in this guess, AND
+            // it's not already known to be in mustContain (from previous G/Y hints).
+            for (let i = 0; i < 5; i++) {
+                const char = guessedChars[i];
+                const hint = hintPattern[i];
+                if (hint === 'B') {
+                    // Check if this char is green or yellow anywhere in the *current* guess
+                    let isGreenOrYellowInCurrentGuess = false;
+                    for(let j=0; j<5; j++){
+                        if(guessedChars[j] === char && (hintPattern[j] === 'G' || hintPattern[j] === 'Y')){
+                            isGreenOrYellowInCurrentGuess = true;
+                            break;
+                        }
+                    }
+                    if (!isGreenOrYellowInCurrentGuess && !newKnowledge.mustContain.has(char)) {
+                        newKnowledge.confirmedGrey.add(char);
+                    }
+                }
+            }
+            return newKnowledge;
+        }
+
+        isValidNextGuess(guessWord) {
+            const guessChars = guessWord.split('');
+            // 1. Check Green positions
+            for (const posStr in this.greenMap) {
+                if (guessChars[parseInt(posStr)] !== this.greenMap[posStr]) return false;
+            }
+            // 2. Check if all "mustContain" letters are present
+            for (const char of this.mustContain) {
+                if (!guessChars.includes(char)) return false;
+            }
+            // 3. Check Yellow positions (letter must not be in a known yellow spot for it)
+            for (const char in this.yellows) {
+                for (const pos of this.yellows[char]) {
+                    if (guessChars[pos] === char) return false;
+                }
+            }
+  
+            for (let i = 0; i < 5; i++) {
+                const char = guessChars[i];
+                if (this.confirmedGrey.has(char) && !this.mustContain.has(char)) {
+                    return false; // This char is grey and not otherwise required
+                }
+            }
+            return true;
+        }
+    }
+    
+    function getWordsMatchingKnowledge(knowledge) {
+        const greenEntries = Object.entries(knowledge.greenMap).sort((a, b) => a[0] - b[0]).map(entry => `${entry[0]}:${entry[1]}`).join(',');
+        const yellowEntries = Object.entries(knowledge.yellows)
+                                    .sort((a,b) => a[0].localeCompare(b[0]))
+                                    .map(([char, positions]) => `${char}:${Array.from(positions).sort().join('')}`)
+                                    .join(',');
+        const mustContainStr = Array.from(knowledge.mustContain).sort().join('');
+        const confirmedGreyStr = Array.from(knowledge.confirmedGrey).sort().join('');
+        
+        const knowledgeKey = `G:${greenEntries}|Y:${yellowEntries}|MC:${mustContainStr}|CG:${confirmedGreyStr}`;
+
+        if (wordListCacheForKnowledge.has(knowledgeKey)) {
+            return wordListCacheForKnowledge.get(knowledgeKey);
+        }
+
+        const filtered = wordList.filter(word => knowledge.isValidNextGuess(word));
+        wordListCacheForKnowledge.set(knowledgeKey, filtered);
+        return filtered;
+    }
+
+    async function findGuessSequencesRecursive(
+        userHints,
+        currentHintIndex,
+        currentKnowledge,
+        pathOfGuesses // current sequence of guess words being built
+    ) {
+        if (stopSearchFlag) return;
+
+        if (currentHintIndex === userHints.length) {
+            // Base case: A full sequence of guesses is formed.
+            // Now, find all target words from wordList consistent with this guess sequence and userHints.
+            let compatibleTargets = [...wordList];
+            for (let i = 0; i < pathOfGuesses.length; i++) {
+                const guess = pathOfGuesses[i];
+                const expectedHint = userHints[i];
+                compatibleTargets = compatibleTargets.filter(target => generateHints(target, guess) === expectedHint);
+                if (compatibleTargets.length === 0) break; // Early exit if no target works
+            }
+
+            for (const target of compatibleTargets) {
+                solutionsFound.push({ target: target, guesses: [...pathOfGuesses] });
+                displaySolutions(); // Update UI as solutions are found
+                if (solutionsFound.length >= 20) { // Hard limit
+                    stopSearchFlag = true;
+                    throw new Error("Solution limit reached");
+                }
+            }
+            return;
+        }
+
+        const currentExpectedHint = userHints[currentHintIndex];
+        const candidateGuesses = getWordsMatchingKnowledge(currentKnowledge); // Optimal guesses for this step
+
+        document.getElementById('statusMessage').textContent =
+            `Hint ${currentHintIndex + 1}/${userHints.length}: Evaluating ${candidateGuesses.length} optimal guess(es). Solutions: ${solutionsFound.length}`;
+
+        for (let i = 0; i < candidateGuesses.length; i++) {
+            const candidateGuess = candidateGuesses[i];
+            if (stopSearchFlag) return;
+
+            // Throttle for UI responsiveness and stop button check
+            if (i > 0 && i % Math.max(1, Math.floor(candidateGuesses.length / 100)) === 0) {
+                await new Promise(resolve => setTimeout(resolve, 0));
+            }
+
+            const newKnowledge = currentKnowledge.updateWith(candidateGuess, currentExpectedHint);
+            pathOfGuesses.push(candidateGuess);
+
+            try {
+                await findGuessSequencesRecursive(userHints, currentHintIndex + 1, newKnowledge, pathOfGuesses);
+            } catch (e) {
+                if (e.message === "Solution limit reached") {
+                    pathOfGuesses.pop(); // Backtrack before re-throwing
+                    throw e; // Propagate to stop higher recursive calls
+                }
+                // Handle other potential errors if necessary, or just let them propagate
+            }
+            
+            pathOfGuesses.pop(); // Backtrack: remove current guess for next iteration
+        }
+    }
+
+    async function findAllSolutionsOptimized() {
+        if (searchInProgress) return;
+        if (wordList.length === 0) {
+            document.getElementById('errorMessage').textContent = 'Upload 5words.txt first.';
+            return;
+        }
+        const hintRows = document.querySelectorAll('#hintRowsContainer .hint-pattern-row');
+        if (hintRows.length === 0) {
+            document.getElementById('errorMessage').textContent = 'Add at least one hint pattern.';
+            return;
+        }
+
+        const userHints = [];
+        hintRows.forEach(row => {
+            let pattern = '';
+            row.querySelectorAll('.hint-square').forEach(sq => pattern += sq.getAttribute('data-state'));
+            userHints.push(pattern);
+        });
+
+        document.getElementById('errorMessage').textContent = '';
+        document.getElementById('resultsContainer').innerHTML = '<p>Searching...</p>';
+        document.getElementById('statusMessage').textContent = 'Initializing search...';
+        document.getElementById('findSolutionsButton').disabled = true;
+        document.getElementById('stopButton').style.display = 'inline-block';
+        
+        solutionsFound = []; // Reset global solutions
+        searchInProgress = true;
+        stopSearchFlag = false;
+        wordListCacheForKnowledge.clear(); // Clear cache for new search
+
+        const initialKnowledge = new Knowledge();
+
+        try {
+            await findGuessSequencesRecursive(userHints, 0, initialKnowledge, []);
+        } catch (e) {
+            if (e.message === "Solution limit reached") {
+                document.getElementById('statusMessage').textContent = `Search stopped: Maximum solutions (${solutionsFound.length}) found.`;
+            } else {
+                console.error("Search error:", e);
+                document.getElementById('statusMessage').textContent = 'Search encountered an error.';
+            }
+        }
+
+        if (!stopSearchFlag && !(solutionsFound.length >= 20 && stopSearchFlag)) { // If not stopped by limit or user
+            document.getElementById('statusMessage').textContent = `Search complete. Found ${solutionsFound.length} solution(s).`;
+        } else if (stopSearchFlag && solutionsFound.length < 20) { // Stopped by user before limit
+            document.getElementById('statusMessage').textContent = 'Search stopped by user.';
+        }
+       
+        searchInProgress = false;
+        document.getElementById('findSolutionsButton').disabled = false;
+        document.getElementById('stopButton').style.display = 'none';
+
+        if (solutionsFound.length === 0 && !stopSearchFlag) {
+            document.getElementById('resultsContainer').innerHTML = '<p>No solutions found matching the criteria.</p>';
+        } else {
+            displaySolutions(); // Ensure final display
+        }
+    }
+    
+    function stopSearch() {
+        stopSearchFlag = true;
+        document.getElementById('statusMessage').textContent = 'Stopping search...';
+    }
+
+    function displaySolutions() {
+        const container = document.getElementById('resultsContainer');
+        // Don't clear if incrementally adding, but for simplicity here, we'll redraw
+        container.innerHTML = ''; 
+        if (solutionsFound.length === 0 && !searchInProgress) { // Only show "no solutions" if search is done
+            container.innerHTML = '<p>No solutions found yet or search in progress.</p>';
+            return;
+        }
+        
+        const numToShow = solutionsFound.length; // Can limit this if too many (e.g. Math.min(solutionsFound.length, 50))
+        
+        solutionsFound.slice(0, numToShow).forEach((sol, index) => {
+            const solDiv = document.createElement('div');
+            solDiv.className = 'solution-block';
+            let guessesHTML = '<ul>';
+            sol.guesses.forEach((guess, i) => {
+                // Get the user-provided hint for this guess step
+                const hintRows = document.querySelectorAll('#hintRowsContainer .hint-pattern-row');
+                let actualHintDisplay = "N/A";
+                if (hintRows[i]) {
+                    actualHintDisplay = '';
+                     hintRows[i].querySelectorAll('.hint-square').forEach(sq => actualHintDisplay += sq.getAttribute('data-state'));
+                } else { // Fallback if somehow hint row is missing, though unlikely
+                    actualHintDisplay = generateHints(sol.target, guess); // This would be the *generated* hint
+                }
+                guessesHTML += `<li>Guess ${i + 1}: <strong>${guess}</strong> (User Hint: ${actualHintDisplay})</li>`;
+            });
+            guessesHTML += '</ul>';
+            solDiv.innerHTML = `<h3>Possible Target Word: ${sol.target}</h3>${guessesHTML}`;
+            container.appendChild(solDiv);
+        });
+
+        if (solutionsFound.length === 0 && searchInProgress) {
+             container.innerHTML = '<p>Searching for solutions...</p>';
+        } else if (solutionsFound.length === 0 && !searchInProgress) {
+             container.innerHTML = '<p>No solutions found.</p>';
+        }
+    }
+
+    // Initial setup
+    // addHintRow(); // Start with one hint row by default if desired
+</script>
+</body>
+</html>
